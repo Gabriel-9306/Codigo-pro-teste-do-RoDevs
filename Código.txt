@@ -1,0 +1,457 @@
+local ServerScriptService = game:GetService("ServerScriptService")
+local replicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local DamageTakenAnimations = replicatedStorage.Animacos.Combate.TomarDano
+local EfeitosModule = require(replicatedStorage.Utils.Combat.EffectsMaker)
+local StunHandler = require(replicatedStorage.Utils.Combat.StunHandlerV2)
+local Manager = require(ServerScriptService.PlayerData.DataManager)
+local RunningAnimation = replicatedStorage.Animacos.Combate.Running_Walking.Running
+local ArrendondarDecimais = require(replicatedStorage.Utils.ArrendondarNumerosDecimais)
+local Running_WalkingRemote = replicatedStorage.Remotes.RemoteEvent.Combat.RequestRunning_Walking
+local M1Sounds = replicatedStorage.Utils.Sounds.Combat
+
+local Combat = {}
+Combat.Utilities = {}
+
+Combat.PlayersCombatCheckers = {}
+
+game.Players.PlayerAdded:Connect(function(player)
+	Combat.PlayersCombatCheckers[player.Name] = {
+		--PlayersM1ComboTable
+		Stunned = false,
+		Attacking = false,
+		M1sCombo = 1,
+		LastM1Endlag = false,
+		Running = false,
+		InCombatTable = {
+			IsInCombat = false,
+			ResetTimer = 0
+		},
+		ActiveTechniques = {},
+		MidTechnique = false,
+		MidTechniqueAnimation = false,
+		Blocking = false,
+	}
+end)
+
+game.Players.PlayerRemoving:Connect(function(player)
+	Combat.PlayersCombatCheckers[player.Name] = nil
+end)
+
+local WalkSpeedTable = {}
+local InitialRunSpeed = 32
+
+local BaseStatsNumbers = {
+	Stamina = 100,
+	Durability = 97,
+	Agility = 1,
+}
+
+for count = 0,1000,1 do
+	WalkSpeedTable[count] = ArrendondarDecimais.ArrendondarNumerosDecimais(2,InitialRunSpeed)
+	InitialRunSpeed += 0.051
+end
+
+local M1AnimationSpeedTable = {}
+local StartSpeed = 1.25
+
+for count = 0,1000,1 do
+	M1AnimationSpeedTable[count] = ArrendondarDecimais.ArrendondarNumerosDecimais(5,StartSpeed)
+	StartSpeed += 0.000375
+end
+
+function Combat.Utilities.ReturnM1Damage(player)
+	local profile = Manager.Profiles[player]
+	if not profile then return end
+
+	local Strengh = profile.Data.CharacterStats.Strength*profile.Data.BaseStatsMult.Strength
+	local PlayerMultsAttack = 0
+
+	for name,value in profile.Data.CharacterStats.CombatMults.Attack do
+		PlayerMultsAttack  += value
+	end
+
+	local Damage = Strengh*PlayerMultsAttack
+
+	return Damage
+end
+
+function Combat.Utilities.CheckIfCanUseTechnique(player:Player)
+	local CanUse = true
+	local PlayerTable = Combat.PlayersCombatCheckers[player.Name]
+	
+	if PlayerTable.Blocking == true or PlayerTable.Stunned == true or PlayerTable.Attacking == true or PlayerTable.MidTechnique == true or PlayerTable.LastM1Endlag == true or PlayerTable.MidTechniqueAnimation == true then
+		CanUse = false
+		return CanUse
+	end
+	
+	return CanUse
+end
+
+function Combat.Utilities.FinishedUsingTechnique(player)
+	Combat.PlayersCombatCheckers[player.Name].MidTechnique = false
+	Combat.PlayersCombatCheckers[player.Name].MidTechniqueAnimation = false
+end
+
+function Combat.Utilities.HowMuchMaxStaminaPlayerHas(player)
+	local profile = Manager.Profiles[player]
+	if not profile then return print("Não achei profile") end
+	
+	local Stamina= math.round(((BaseStatsNumbers.Stamina)+(profile.Data.CharacterStats.Stamina*profile.Data.BaseStatsMult.Stamina)))
+	return Stamina
+end
+
+function Combat.Utilities.PlayDamagedHumanoidAnimation(Humanoid:Humanoid)
+
+	local Animator:Animator = Humanoid.Animator
+	local DamageAnimation:Animation = replicatedStorage.Animacos.Combate.TomarDano[math.random(1,2)]
+	local toPlayAnimation = Animator:LoadAnimation(DamageAnimation)
+	toPlayAnimation:Play(0.1,1,2)
+end
+
+function Combat.Utilities.PutPlayerOnCombatAndIfInCombatAlreadyIncreaseTimer(humanoid,player)
+	if not player then player = Players:FindFirstChild(humanoid.Parent.Name) end
+	
+	if Combat.PlayersCombatCheckers[player.Name].InCombatTable.IsInCombat ~= true then
+		Combat.PlayersCombatCheckers[player.Name].InCombatTable.IsInCombat = true
+		Combat.PlayersCombatCheckers[player.Name].InCombatTable.ResetTimer += (30-Combat.PlayersCombatCheckers[player.Name].InCombatTable.ResetTimer)
+		player.Character:SetAttribute("Combat",true)
+		replicatedStorage.Remotes.RemoteEvent.TaskBar.MakeTaskBarCustom:FireClient(player,"CombatTag","In Combat ["..(Combat.PlayersCombatCheckers[player.Name].InCombatTable.ResetTimer).."] Seconds","",false,false)
+	else
+		Combat.PlayersCombatCheckers[player.Name].InCombatTable.ResetTimer += (30-Combat.PlayersCombatCheckers[player.Name].InCombatTable.ResetTimer)
+	end
+end
+
+function Combat.Utilities.VerifyIfPlayerIsBlocking(player:Player)
+	local PlayerTableItem = Combat.PlayersCombatCheckers[player.Name]
+	local IsBlocking = false
+	
+	if PlayerTableItem.Blocking == true then IsBlocking = true else IsBlocking = false end
+	
+	return IsBlocking
+end
+
+function Combat.VerifyIfIsMidTechnique(player:Player)
+	local IsMidTechnique = nil
+	local PlayerMidTechnique = Combat.PlayersCombatCheckers[player.Name].MidTechnique
+	
+	if PlayerMidTechnique == true then
+		IsMidTechnique = true
+	end
+	
+	return IsMidTechnique
+end
+
+function Combat.DoDamageM1Damage(player:Player,humanoidPlayer:Humanoid,HumanoidOther:Humanoid)
+	local profile = Manager.Profiles[player]
+	if not profile then return end
+
+	local Strengh = profile.Data.CharacterStats.Strength*profile.Data.BaseStatsMult.Strength
+	local PlayerMultsAttack = 0
+
+	for name,value in profile.Data.CharacterStats.CombatMults.Attack do
+		PlayerMultsAttack  += value
+	end
+
+	local Damage = Strengh*PlayerMultsAttack
+
+
+	local player2 = Players:FindFirstChild(HumanoidOther.Parent.Name)
+
+
+	if not player2 then
+		--Se não for um player
+		local HPROther = HumanoidOther.Parent:FindFirstChild("HumanoidRootPart")
+		EfeitosModule.MakePunchVFX(Damage,HPROther,profile.Data.NenColor)
+		local PlayerObject = Players:FindFirstChild(humanoidPlayer.Parent.Name)
+		local Player2Object = Players:FindFirstChild(HumanoidOther.Parent.Name)
+
+		local AnimatorEnemy:Animator = HumanoidOther:FindFirstChild("Animator")
+		if not AnimatorEnemy then return warn("Humanoid not found") end
+		local animationitem:Animation = DamageTakenAnimations[math.random(1,2)]
+		local AnimationOtherHuma = AnimatorEnemy:LoadAnimation(animationitem)
+		StunHandler.Stun(HumanoidOther,2)
+
+		AnimationOtherHuma:Play(0.1,1,1)
+		HumanoidOther:TakeDamage(Damage)
+		--Toca o som de soco
+		local PunchSound:Sound = M1Sounds[math.random(1,2)]:Clone()
+		PunchSound.Parent = humanoidPlayer.Parent
+		PunchSound:Play()
+		task.delay(0.5,function()
+			PunchSound:Destroy()
+		end)
+		Combat.Utilities.PutPlayerOnCombatAndIfInCombatAlreadyIncreaseTimer(humanoidPlayer,player)
+		replicatedStorage.Remotes.RemoteEvent.Combat.DamagedHumanoid:FireAllClients(HPROther.Parent,Damage)
+	else
+		--Se o humanoid for um player ele vai fazer o processo de dano do player
+		local otherplayerprofile = Manager.Profiles[player2]
+		local PlayerObject = Players:FindFirstChild(humanoidPlayer.Parent.Name)
+		local Player2Object = Players:FindFirstChild(HumanoidOther.Parent.Name)
+		local HPR = HumanoidOther.Parent:FindFirstChild("HumanoidRootPart")
+		EfeitosModule.MakePunchVFX(Damage,HPR,profile.Data.NenColor)
+		
+		local AnimatorEnemy:Animator = HumanoidOther:FindFirstChild("Animator")
+		if not AnimatorEnemy then return warn("Humanoid not found") end
+		local animationitem:Animation = DamageTakenAnimations[math.random(1,2)]
+		local AnimationOtherHuma = AnimatorEnemy:LoadAnimation(animationitem)
+		local Agility = profile.Data.CharacterStats.Agility
+		if Agility > 1000 then Agility = 1000 end
+		local StunTime = M1AnimationSpeedTable[math.round(Agility)] 
+		StunHandler.Stun(HumanoidOther,StunTime + 0.15)
+
+		AnimationOtherHuma:Play(0.1,1,StunTime)
+		local DefenseOtherPlayer = 0
+		
+		for name,value in otherplayerprofile.Data.CharacterStats.CombatMults.Defense do
+			DefenseOtherPlayer += value
+		end
+		
+		HumanoidOther:TakeDamage(math.round(Damage/DefenseOtherPlayer))
+		--Toca o som de soco
+		local PunchSound:Sound = M1Sounds[math.random(1,2)]:Clone()
+		PunchSound.Parent = humanoidPlayer.Parent
+		PunchSound:Play()
+		Combat.SetWalkspeed(Players:FindFirstChild(humanoidPlayer.Parent.Name),false)
+		Combat.SetWalkspeed(Players:FindFirstChild(HumanoidOther.Parent.Name),false)
+		--Player 1
+		Combat.Utilities.PutPlayerOnCombatAndIfInCombatAlreadyIncreaseTimer(humanoidPlayer,player)
+		--Player 2
+		Combat.Utilities.PutPlayerOnCombatAndIfInCombatAlreadyIncreaseTimer(HumanoidOther,player2)
+		replicatedStorage.Remotes.RemoteEvent.Combat.DamagedHumanoid:FireAllClients(HPR.Parent,math.round(Damage/DefenseOtherPlayer))
+	end
+end
+
+function Combat.SetWalkspeed(player:Player,WantToRun:boolean,ForUseMidTechnique:boolean,WantToBlock:boolean)
+	if player.Character:FindFirstChild("Humanoid").Health <= 0 then return end
+	if player.Character:GetAttribute("Stunned")==true or Combat.PlayersCombatCheckers[player.Name].Stunned == true or Combat.PlayersCombatCheckers[player.Name].LastM1Endlag == true or Combat.PlayersCombatCheckers[player.Name].Attacking == true or Combat.PlayersCombatCheckers[player.Name].MidTechnique == true and ForUseMidTechnique == false then return end
+	local profile = Manager.Profiles[player]
+	if not profile then return end
+	
+	local Humanoid = player.Character:FindFirstChild("Humanoid")
+    if not Humanoid then return end	
+	
+
+	
+	if WantToRun == true then
+		if Combat.PlayersCombatCheckers[player.Name].Blocking == true then return end
+		--Ativa o correr
+		local Agility = profile.Data.CharacterStats.Agility * profile.Data.BaseStatsMult.Agility
+		
+		if Agility >= 1000 then Agility = 1000 end
+		if Combat.PlayersCombatCheckers[player.Name].InCombatTable.IsInCombat == true and Agility > 432 then
+			Agility = 432
+		end
+		
+		Humanoid.WalkSpeed = (WalkSpeedTable[math.round(Agility)])
+		replicatedStorage.Remotes.RemoteEvent.TaskBar.MakeTaskBarCustom:FireClient(player,"Running","Running","["..math.round(player.Character.Humanoid.WalkSpeed).." WalkSpeed]",false)
+		Combat.PlayersCombatCheckers[player.Name].Running = true
+		Running_WalkingRemote:FireClient(player,true)
+		
+	else
+		if not WantToBlock then
+			--Se o player ja estiver correndo ele desabilita o correr
+			Combat.PlayersCombatCheckers[player.Name].Running = false
+			Humanoid.WalkSpeed = 24
+			replicatedStorage.Remotes.RemoteEvent.TaskBar.MakeTaskBarCustom:FireClient(player,"Running","Running","["..math.round(player.Character.Humanoid.WalkSpeed).." WalkSpeed] ",true)
+			Running_WalkingRemote:FireClient(player,false)
+		else
+			Combat.PlayersCombatCheckers[player.Name].Running = false
+			Humanoid.WalkSpeed = 6
+			replicatedStorage.Remotes.RemoteEvent.TaskBar.MakeTaskBarCustom:FireClient(player,"Running","Running","["..math.round(player.Character.Humanoid.WalkSpeed).." WalkSpeed] ",true)
+			replicatedStorage.Remotes.RemoteEvent.TaskBar.MakeTaskBarCustom:FireClient(player,"Blocking","Blocking","",false,false)
+			Running_WalkingRemote:FireClient(player,false)
+		end
+		
+	end
+	
+end
+
+function Combat.SetWalkSpeedMidTechnique(player:Player,WantToRun:boolean)
+	if player.Character:FindFirstChild("Humanoid").Health <= 0 then return end
+	
+	local profile = Manager.Profiles[player]
+	if not profile then return end
+
+	local Humanoid = player.Character:FindFirstChild("Humanoid")
+	if not Humanoid then return end	
+	
+	if WantToRun == true then
+		--Ativa o correr
+		local Agility = profile.Data.CharacterStats.Agility * profile.Data.BaseStatsMult.Agility
+
+		if Agility >= 1000 then Agility = 1000 end
+		if Combat.PlayersCombatCheckers[player.Name].InCombatTable.IsInCombat == true and Agility > 432 then
+			Agility = 432
+		end
+
+		Humanoid.WalkSpeed = (WalkSpeedTable[math.round(Agility)])
+		Combat.PlayersCombatCheckers[player.Name].Running = true
+		Running_WalkingRemote:FireClient(player,true)
+		replicatedStorage.Remotes.RemoteEvent.TaskBar.MakeTaskBarCustom:FireClient(player,"Running","Running","["..math.round(player.Character.Humanoid.WalkSpeed).." WalkSpeed]",false)
+	else
+		--Se o player ja estiver correndo ele desabilita o correr
+		Combat.PlayersCombatCheckers[player.Name].Running = false
+		Humanoid.WalkSpeed = 24
+		Running_WalkingRemote:FireClient(player,false)
+		replicatedStorage.Remotes.RemoteEvent.TaskBar.MakeTaskBarCustom:FireClient(player,"Running","Running","["..math.round(player.Character.Humanoid.WalkSpeed).." WalkSpeed] ",true)
+	end
+end
+
+function Combat.StunHumanoid(Humanoid,StunTime)
+	StunHandler.Stun(Humanoid,StunTime)
+	if Players:FindFirstChild(Humanoid.Parent.Name) then
+		Combat.PlayersCombatCheckers[Humanoid.Parent.Name].Stunned = true
+		replicatedStorage.Remotes.RemoteEvent.Combat.PlayerStunned:FireAllClients(Players:FindFirstChild(Humanoid.Parent.Name),StunTime)
+		task.delay(StunTime,function()
+			if not Combat.PlayersCombatCheckers[Humanoid.Parent.Name] then return end
+			Combat.PlayersCombatCheckers[Humanoid.Parent.Name].Stunned = false
+		end)
+	end
+	
+	
+end
+
+function Combat.DoDamage(player:Player,Humanoid:Humanoid,OtherHumanoid:Humanoid,Damage:number,AlreadyCalculatedAtkDefenseModifiersPlayer2:boolean)
+	local profile = Manager.Profiles[player]
+	if not profile then print("Sem profile player 1") return end
+	local Player2 = nil
+	local OtherProfile = Manager.Profiles[Players:FindFirstChild(OtherHumanoid.Parent.Name)]
+	if OtherProfile then Player2 = Players:FindFirstChild(OtherHumanoid.Parent.Name) return end
+	
+	--Se ele não tiver calculado os mults de defesa do outro player
+	if AlreadyCalculatedAtkDefenseModifiersPlayer2 == true then
+		
+		if Player2 ~= nil then
+			--Se for um player
+			local Defense = profile.Data.CharacterStats.Durability*profile.Data.BaseStatsMult.Durability
+			local PlayerMultsDurability = 0
+
+			for name,value in profile.Data.CharacterStats.CombatMults.Defense do
+				PlayerMultsDurability  += value
+			end
+
+			Damage /= Defense
+			OtherHumanoid:TakeDamage(Damage)
+		else
+			--Se for um npc
+			OtherHumanoid:TakeDamage(Damage)
+		end
+
+		
+	else
+		--Se não tiver calculado faz os calculos
+		if Player2 ~= nil then
+			--Se for um player
+			local StrenghPlayer1 = profile.Data.CharacterStats.Strength*profile.Data.BaseStatsMult.Strength
+			local Player1MultsAttack = 0
+
+			for name,value in profile.Data.CharacterStats.CombatMults.Attack do
+				Player1MultsAttack  += value
+			end
+
+			local Damage = StrenghPlayer1*Player1MultsAttack
+
+			local Defense = profile.Data.CharacterStats.Durability*profile.Data.BaseStatsMult.Durability
+			local PlayerMultsDurability = 0
+
+			for name,value in profile.Data.CharacterStats.CombatMults.Defense do
+				PlayerMultsDurability  += value
+			end
+
+			Damage /= Defense
+			OtherHumanoid:TakeDamage(Damage)
+		else
+			--Se for um npc
+			local StrenghPlayer1 = profile.Data.CharacterStats.Strength*profile.Data.BaseStatsMult.Strength
+			local Player1MultsAttack = 0
+
+			for name,value in profile.Data.CharacterStats.CombatMults.Attack do
+				Player1MultsAttack  += value
+			end
+
+			local Damage = StrenghPlayer1*Player1MultsAttack
+			
+			
+			OtherHumanoid:TakeDamage(Damage)
+		end
+		
+		
+	end
+	
+	
+	return Damage
+end
+
+function Combat.NPC_DoDamage(Humanoid:Humanoid,Damage)
+	if Players:FindFirstChild(Humanoid.Parent.Name) then
+		print("Dando dano",Damage)
+		local profile = Manager.Profiles[Players:FindFirstChild(Humanoid.Parent.Name)]
+		if not profile then return end
+		--Se for um player
+		local Defense = 0
+
+		for name,value in profile.Data.CharacterStats.CombatMults.Defense do
+			Defense  += value
+		end
+		Damage /= Defense
+		Humanoid:TakeDamage(Damage)
+		Combat.Utilities.PlayDamagedHumanoidAnimation(Humanoid)
+	end
+end
+
+function Combat.BlockBreakPlayer(Humanoid:Humanoid)
+
+	if not Humanoid or Humanoid.Health <= 0 then return end
+	
+	local Animator = Humanoid:FindFirstChild("Animator")
+	if Players:FindFirstChild(Humanoid.Parent.Name) then
+		local Player = Players:FindFirstChild(Humanoid.Parent.Name)
+		local PlayerTableItem = Combat.PlayersCombatCheckers[Humanoid.Parent.Name]
+		PlayerTableItem.Blocking = false
+		PlayerTableItem.Stunned = true
+		local WalkSpeed = Humanoid.WalkSpeed
+		Combat.StunHumanoid(Humanoid,3)
+		
+		task.spawn(function()
+			while PlayerTableItem.Stunned and Humanoid.WalkSpeed ~= 2 do
+				Humanoid.WalkSpeed = 2
+				wait()
+			end
+		end)
+		
+		local BlockBreaked:AnimationTrack = Animator:LoadAnimation(replicatedStorage.Animacos.Combate.Block.BlockBreaked2)
+		BlockBreaked:Play()
+		BlockBreaked:AdjustSpeed(3)
+		BlockBreaked.Looped = true
+		
+		local BlockBreakedSound = replicatedStorage.Utils.Sounds.Combat.BlockBreakSound:Clone()
+		BlockBreakedSound.Parent = Humanoid.Parent.Objetos
+		BlockBreakedSound:Play()
+		
+		replicatedStorage.Remotes.RemoteEvent.TaskBar.MakeTaskBarCustom:FireClient(Player,"Blocking","Blocking","",true,false)
+		replicatedStorage.Remotes.RemoteEvent.TaskBar.MakeTaskBarCustom:FireClient(Player,"BlockBreaked","BlockBreaked","[Stunned]",false,false)
+		task.delay(3,function()
+			BlockBreaked:Stop()
+			BlockBreakedSound:Destroy()
+			if Humanoid.WalkSpeed < 24 then
+				Humanoid.WalkSpeed = WalkSpeed
+			end
+			replicatedStorage.Remotes.RemoteEvent.TaskBar.MakeTaskBarCustom:FireClient(Player,"BlockBreaked","BlockBreaked","[Stunned]",true,false)
+		end)
+		
+	else
+		Combat.StunHumanoid(Humanoid,3.5)
+		
+		local BlockBreaked:AnimationTrack = Animator:LoadAnimation(replicatedStorage.Animacos.Combate.Block.BlockBreaked)
+		BlockBreaked:Play()
+		BlockBreaked:AdjustSpeed(2.5)
+		BlockBreaked.Looped = true
+		task.delay(3.5,function()
+			BlockBreaked:Stop()
+		end)
+	end
+	
+end
+
+return Combat
